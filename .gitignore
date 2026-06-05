@@ -17,3 +17,7 @@ result-*
 .dolt/
 *.db
 .beads-credential-key
+
+# Python bytecode (bench/plot.py)
+__pycache__/
+*.pyc

@@ -43,4 +43,15 @@ if(SHIMMY_ENABLE_TSAN)
   target_compile_definitions(shimmy_tests PRIVATE SHIMMY_TSAN_NO_FORK=1)
 endif()
 
+# Optional LLVM source-based coverage (clang only). Mirrors the TSan option:
+# instrument the compiled test target, then llvm-profdata merge + llvm-cov report
+# over include/shimmy/* yields the measured library coverage. The library is
+# header-only, so coverage of the headers is realized entirely through the test
+# translation units that include them.
+if(SHIMMY_ENABLE_COVERAGE)
+  target_compile_options(shimmy_tests PRIVATE
+    -fprofile-instr-generate -fcoverage-mapping -g -O0)
+  target_link_options(shimmy_tests PRIVATE -fprofile-instr-generate)
+endif()
+
 gtest_discover_tests(shimmy_tests)

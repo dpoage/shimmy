@@ -29,6 +29,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SHIMMY_BUILD_TESTS "Build correctness tests" ON)
 option(SHIMMY_BUILD_BENCH "Build benchmarks" ON)
 option(SHIMMY_ENABLE_TSAN "Build with ThreadSanitizer (tests only)" OFF)
+option(SHIMMY_ENABLE_COVERAGE
+  "Build tests with LLVM source-based coverage instrumentation (clang only)" OFF)
 
 # ---------------------------------------------------------------------------
 # Header-only library target

@@ -146,6 +146,51 @@ data.
 
 ---
 
+## 5a. Performance characteristics — what bounds throughput
+
+> Measured, not asserted. This section records *why* the numbers land where they
+> do, because it determines which optimizations can and cannot help.
+
+The single-producer **headline throughput (64B, one consumer) is
+cache-coherence bound, not frequency bound.** Evidence: moving the host from a
+power-saving to a performance CPU profile raised the pure-publish *drain* ceiling
+(0 consumers) by ~41% (≈777M → ≈1097M msgs/sec @64B) but left the 64B/1-consumer
+headline essentially flat (~151M). A faster clock sped up the producer running
+alone; it did not move the rate once a consumer is attached.
+
+The reason is the SPMC fan-out mechanism itself: when a consumer reads a slot the
+producer just wrote, that cache line must migrate from the producer's core to the
+reader's (the publish stamp + payload line transitions through the coherence
+protocol — Modified→Shared/Owned). The cost of that line migration, not the CPU
+frequency and not per-message instruction count, is what gates the rate. The gap
+between the 0-consumer and 1-consumer curves *is* this coherence cost made
+visible.
+
+Two distinct regimes, both fixed-block-by-design:
+- **Small messages (≤ ~256B): coherence-bound.** Rate is limited by cache-line
+  migration per message. Clock speed barely moves it.
+- **Large messages (≥ ~1KB): bandwidth-bound.** At 4KB the ring moves tens of
+  GiB/s and the message rate collapses toward the memory bus — exactly what a
+  fixed-block design should do.
+
+**Consequences for optimization (this is the actionable part):**
+- Chasing CPU frequency or shaving per-message instructions will **not** move the
+  small-message headline. Only reducing *coherence traffic* will: fewer/cheaper
+  cache-line transitions per message, better line packing, or amortizing the
+  contended line across messages.
+- This retroactively explains the batch-sync investigation (shimmy-68t): batch
+  *consume* on the Overwrite path gave **no** throughput win — there is no
+  contended consumer-cursor store to amortize there; the migrating slot line is
+  the bottleneck and batching the cursor doesn't touch it. The contended line in
+  the Backpressure path (the consumer cursor) is the one worth amortizing, which
+  is why batch-consume is a Backpressure *latency/tail* tool, not an Overwrite
+  *throughput* tool.
+- Any future "speedup" hypothesis must be evaluated against the question: *does
+  it reduce cache-line migrations on the hot path?* If not, it cannot raise
+  small-message throughput, regardless of how much CPU work it removes.
+
+---
+
 ## 6. Latency tiers by wait strategy
 
 We do **not** pick one latency ceiling. Each wait strategy has its own bound,

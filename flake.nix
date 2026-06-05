@@ -52,6 +52,17 @@
           pkgs.gcc           # gcc/g++ for the dual-compiler build
           pkgs.gdb
           pkgs.linuxPackages.perf
+          # Pinned python + matplotlib for REPRODUCIBLE chart generation
+          # (bench/plot.py renders the committed baselines into assets/*.svg).
+          # Pinning it here — rather than leaning on whatever matplotlib happens
+          # to be on the host /usr/bin/python3 — keeps "data doesn't lie"
+          # honest: the same flake produces the same charts from the same CSVs.
+          (pkgs.python3.withPackages (ps: [ ps.matplotlib ]))
+          # LLVM 18 tools matching the pinned clang 18. llvm-cov + llvm-profdata
+          # drive source-based coverage (SHIMMY_ENABLE_COVERAGE); the profdata
+          # format is version-coupled to the instrumenting clang, so we pin the
+          # SAME major (18) rather than relying on whatever llvm is on the host.
+          pkgs.llvmPackages_18.libllvm
         ];
       in
       {
