@@ -111,6 +111,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <stdexcept>
@@ -231,14 +232,17 @@ struct segment_options {
 
 namespace detail {
 
+// Round `v` up to the next multiple of `align` (which must be a power of two).
+constexpr std::size_t align_up(std::size_t v, std::size_t align) noexcept {
+  return (v + (align - 1)) & ~(align - 1);
+}
+
 // Offset at which the Ring is placed: the first offset >= sizeof(SegmentHeader)
 // that satisfies alignof(RingT). Computed identically by creator and opener
 // from compile-time constants — no stored pointer, address-independent.
 template <typename RingT>
 constexpr std::size_t ring_offset() noexcept {
-  constexpr std::size_t a = alignof(RingT);
-  constexpr std::size_t h = sizeof(SegmentHeader);
-  return (h + (a - 1)) & ~(a - 1);
+  return align_up(sizeof(SegmentHeader), alignof(RingT));
 }
 
 // Total bytes the segment must hold for ring RingT.
@@ -250,6 +254,27 @@ constexpr std::size_t segment_bytes() noexcept {
 [[noreturn]] inline void throw_os(const char* what) {
   const int err = errno;
   throw shm_os_error(err, std::string(what) + ": " + std::strerror(err));
+}
+
+// Format a 64-bit value as a fixed-width, upper-case, 16-digit hex string. Used
+// only on the cold layout-error path (e.g. reporting a bad magic).
+inline std::string to_hex(std::uint64_t v) {
+  char buf[17];
+  std::snprintf(buf, sizeof(buf), "%016llX",
+                static_cast<unsigned long long>(v));
+  return std::string(buf);
+}
+
+// Throw shm_layout_error if `got` != `want`, naming the field. Used by header
+// validation to reject a segment whose recorded layout differs from this build.
+template <typename A, typename B>
+inline void check_eq(const char* field, A got, B want) {
+  if (static_cast<std::uint64_t>(got) != static_cast<std::uint64_t>(want)) {
+    throw shm_layout_error(
+        std::string("incompatible ") + field + ": segment=" +
+        std::to_string(static_cast<std::uint64_t>(got)) + " this build=" +
+        std::to_string(static_cast<std::uint64_t>(want)));
+  }
 }
 
 } // namespace detail
@@ -461,7 +486,7 @@ private:
 
     if (hdr->magic != SegmentHeader::kMagic) {
       throw shm_layout_error("bad magic: not a shimmy segment (got 0x" +
-                             to_hex(hdr->magic) + ")");
+                             detail::to_hex(hdr->magic) + ")");
     }
     if (hdr->version != SegmentHeader::kVersion) {
       throw shm_layout_error("layout version mismatch: segment=" +
@@ -476,19 +501,19 @@ private:
     }
     std::atomic_thread_fence(std::memory_order_acquire);
 
-    check_eq("block_size", hdr->block_size, RingT::block_size);
-    check_eq("capacity", hdr->capacity, RingT::capacity);
-    check_eq("policy", hdr->policy,
-             static_cast<std::uint32_t>(
-                 policy_id_of<typename RingT::overflow_policy>()));
-    check_eq("max_consumers", hdr->max_consumers,
-             static_cast<std::uint32_t>(RingT::max_consumers));
-    check_eq("ring_sizeof", hdr->ring_sizeof, sizeof(RingT));
-    check_eq("ring_alignof", hdr->ring_alignof, alignof(RingT));
-    check_eq("slot_sizeof", hdr->slot_sizeof,
-             sizeof(typename RingT::slot_type));
-    check_eq("header_bytes", hdr->header_bytes,
-             static_cast<std::uint32_t>(detail::ring_offset<RingT>()));
+    detail::check_eq("block_size", hdr->block_size, RingT::block_size);
+    detail::check_eq("capacity", hdr->capacity, RingT::capacity);
+    detail::check_eq("policy", hdr->policy,
+                     static_cast<std::uint32_t>(
+                         policy_id_of<typename RingT::overflow_policy>()));
+    detail::check_eq("max_consumers", hdr->max_consumers,
+                     static_cast<std::uint32_t>(RingT::max_consumers));
+    detail::check_eq("ring_sizeof", hdr->ring_sizeof, sizeof(RingT));
+    detail::check_eq("ring_alignof", hdr->ring_alignof, alignof(RingT));
+    detail::check_eq("slot_sizeof", hdr->slot_sizeof,
+                     sizeof(typename RingT::slot_type));
+    detail::check_eq("header_bytes", hdr->header_bytes,
+                     static_cast<std::uint32_t>(detail::ring_offset<RingT>()));
 
     // The recorded layout matches; confirm the file is big enough to hold the
     // whole ring at the agreed offset (guards a truncated/corrupt segment).
@@ -505,26 +530,6 @@ private:
     ring_ = std::launder(reinterpret_cast<RingT*>(ring_mem));
   }
 
-  template <typename A, typename B>
-  static void check_eq(const char* field, A got, B want) {
-    if (static_cast<std::uint64_t>(got) != static_cast<std::uint64_t>(want)) {
-      throw shm_layout_error(
-          std::string("incompatible ") + field + ": segment=" +
-          std::to_string(static_cast<std::uint64_t>(got)) + " this build=" +
-          std::to_string(static_cast<std::uint64_t>(want)));
-    }
-  }
-
-  static std::string to_hex(std::uint64_t v) {
-    static const char* d = "0123456789ABCDEF";
-    std::string s(16, '0');
-    for (int i = 15; i >= 0; --i) {
-      s[static_cast<std::size_t>(i)] = d[v & 0xF];
-      v >>= 4;
-    }
-    return s;
-  }
-
   // Best-effort hugepage create. Returns true if a MAP_HUGETLB mapping was
   // obtained (and sets the mapping members). Returns false to signal the caller
   // to fall back to the normal shm path. Never throws on the "unavailable"
@@ -536,7 +541,7 @@ private:
     // by the kernel. We don't know the exact huge size portably, so round to a
     // conservative 2 MiB boundary (the common x86-64 default hugepage).
     constexpr std::size_t huge = std::size_t{2} * 1024 * 1024;
-    const std::size_t rounded = (bytes + huge - 1) & ~(huge - 1);
+    const std::size_t rounded = detail::align_up(bytes, huge);
     void* p = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
     if (p == MAP_FAILED) {

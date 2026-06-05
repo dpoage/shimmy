@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <thread>
@@ -23,6 +24,7 @@ namespace {
 
 using shimmy::Backpressure;
 using shimmy::Consumer;
+using shimmy::Futex;
 using shimmy::Overwrite;
 using shimmy::read_status;
 using shimmy::Ring;
@@ -317,6 +319,139 @@ TEST(Concurrency, ZeroCopyInPlaceUnderMaximalLapping) {
       << "validate() must reject every torn zero-copy view; no committed "
          "message may be inconsistent";
   EXPECT_GT(committed.load(), 0u) << "consumer must make forward progress";
+}
+
+// ---------------------------------------------------------------------------
+// Futex conditional-wake: NO LOST WAKEUP (shimmy-7he). The producer now skips
+// FUTEX_WAKE when the eventcount waiter count is zero. The hazard this guards is
+// the producer reading waiters==0 and skipping the wake at the exact instant a
+// consumer commits to FUTEX_WAIT — if that window existed, the consumer would
+// sleep forever and this test would HANG (never reach N). We force the consumer
+// to actually park: the producer paces with a real inter-message gap larger than
+// the consumer's spin budget, so on most messages the consumer exhausts its spin
+// and blocks in the kernel, exercising the inc-waiters / re-check / WAIT path and
+// the producer's waiters-load-then-wake path under genuine contention. Reaching
+// N proves every park was matched by a wake.
+// ---------------------------------------------------------------------------
+TEST(Concurrency, FutexConditionalWakeNoLostWakeup) {
+  constexpr std::size_t Cap = 64;
+  constexpr std::uint64_t N = 20'000;
+  // Backpressure + Futex: the consumer must see every message (lossless), and
+  // read_blocking parks via the Futex strategy when the slot isn't published.
+  using R = Ring<64, Cap, Backpressure, 4, Futex>;
+  R ring;
+
+  std::atomic<bool> ready{false};
+  std::atomic<bool> go{false};
+  std::atomic<int> failures{0};
+  std::atomic<std::uint64_t> read_count{0};
+
+  std::thread consumer([&] {
+    Consumer<R> c(ring);
+    ready.store(true, std::memory_order_release);
+    while (!go.load(std::memory_order_acquire)) {
+    }
+    std::uint64_t expect = 0;
+    while (expect < N) {
+      auto m = c.read_blocking(); // parks in FUTEX_WAIT when nothing published
+      if (c.status() != read_status::ok) {
+        failures.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+      Msg got{};
+      std::memcpy(&got, m.data(), sizeof(got));
+      if (!c.validate()) {
+        continue;
+      }
+      if (got.seq != expect || !msg_consistent(got)) {
+        failures.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+      c.commit();
+      ++expect;
+    }
+    read_count.store(expect, std::memory_order_release);
+  });
+
+  while (!ready.load(std::memory_order_acquire)) {
+  }
+  go.store(true, std::memory_order_release);
+
+  // Pace the producer so the consumer genuinely sleeps between messages: a short
+  // sleep per publish far exceeds the consumer's ~64-iteration spin budget, so it
+  // reaches FUTEX_WAIT — precisely the window the conditional wake must not lose.
+  // (N is kept modest so the paced run stays fast.)
+  for (std::uint64_t seq = 0; seq < N; ++seq) {
+    const Msg m = make_msg(seq);
+    ring.publish(&m, sizeof(m));
+    if ((seq & 0x3F) == 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+  }
+
+  consumer.join();
+
+  EXPECT_EQ(failures.load(), 0) << "futex consumer must read the full stream "
+                                   "in order with no lost wakeup";
+  EXPECT_EQ(read_count.load(), N)
+      << "every message must arrive — a lost wakeup would stall before N";
+}
+
+// Overwrite + Futex variant: a lapped Futex consumer that resyncs must still be
+// woken to make progress to the end of the stream (the wake gate must not strand
+// an Overwrite waiter either).
+TEST(Concurrency, FutexConditionalWakeOverwriteProgress) {
+  constexpr std::size_t Cap = 1024;
+  constexpr std::uint64_t N = 20'000;
+  using R = Ring<64, Cap, Overwrite, 4, Futex>;
+  R ring;
+
+  std::atomic<bool> done{false};
+  std::atomic<std::uint64_t> max_seq{0};
+  std::atomic<int> torn{0};
+
+  std::thread consumer([&] {
+    Consumer<R> c(ring);
+    for (;;) {
+      auto m = c.read_blocking();
+      const auto st = c.status();
+      if (st == read_status::ok) {
+        Msg got{};
+        std::memcpy(&got, m.data(), sizeof(got));
+        if (!c.validate()) {
+          continue;
+        }
+        if (!msg_consistent(got)) {
+          torn.fetch_add(1, std::memory_order_relaxed);
+        }
+        max_seq.store(got.seq, std::memory_order_relaxed);
+        c.commit();
+        if (got.seq + 1 >= N) {
+          break;
+        }
+      } else if (st == read_status::lapped) {
+        c.resync(ring.produced());
+      } else { // empty
+        if (done.load(std::memory_order_acquire) &&
+            c.next() >= ring.produced()) {
+          break;
+        }
+      }
+    }
+  });
+
+  for (std::uint64_t seq = 0; seq < N; ++seq) {
+    const Msg m = make_msg(seq);
+    ring.publish(&m, sizeof(m));
+    if ((seq & 0x3F) == 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+  }
+  done.store(true, std::memory_order_release);
+  consumer.join();
+
+  EXPECT_EQ(torn.load(), 0) << "no committed message may be torn";
+  EXPECT_GT(max_seq.load(), 0u) << "futex consumer must make forward progress";
 }
 
 } // namespace

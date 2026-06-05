@@ -33,11 +33,13 @@
 #include <shimmy/ring.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -191,10 +193,11 @@ int main(int argc, char** argv) {
   print_cpu_config_banner(cfg);
 
   const int ncpu = num_online_cpus();
-  const int producer_cpu = 0;
-  // Spread consumers onto distinct cores starting at cpu 2 (leave cpu1 = SMT
-  // sibling of producer alone for cleaner producer timing).
-  const int first_consumer_cpu = (ncpu > 2) ? 2 : 1;
+  // Producer on cpu0; consumers spread from cpu2 to skip the producer's SMT
+  // sibling for cleaner producer timing (see pick_core_layout).
+  const core_layout layout = pick_core_layout(ncpu);
+  const int producer_cpu = layout.producer_cpu;
+  const int first_consumer_cpu = layout.first_consumer_cpu;
   std::fprintf(stderr,
                "# throughput: producer=cpu%d consumers from cpu%d (%d online), "
                "messages=%lld/cell warmup=%lld reps=%d, policy=Overwrite\n",
@@ -222,21 +225,25 @@ int main(int argc, char** argv) {
                    cc, first_consumer_cpu + cc, ncpu);
       continue;
     }
-    auto c64 = run_cell<64>(cc, messages, warmup, reps, producer_cpu,
-                            first_consumer_cpu, ncpu);
-    emit(csv, c64, cfg);
+    // Run one BlockSize cell and emit its CSV row. BlockSize is a compile-time
+    // NTTP, so the size sweep is an explicit per-size call rather than a runtime
+    // loop; this helper folds away the repeated argument threading + emit.
+    auto run_and_emit = [&](auto block_size_tag) {
+      constexpr std::size_t B = decltype(block_size_tag)::value;
+      const Cell c = run_cell<B>(cc, messages, warmup, reps, producer_cpu,
+                                 first_consumer_cpu, ncpu);
+      emit(csv, c, cfg);
+      return c;
+    };
+
+    const Cell c64 = run_and_emit(
+        std::integral_constant<std::size_t, 64>{});
     if (cc == 1) {
       headline_64_1c = c64.msgs_per_sec;
     }
-    auto c256 = run_cell<256>(cc, messages, warmup, reps, producer_cpu,
-                              first_consumer_cpu, ncpu);
-    emit(csv, c256, cfg);
-    auto c1k = run_cell<1024>(cc, messages, warmup, reps, producer_cpu,
-                              first_consumer_cpu, ncpu);
-    emit(csv, c1k, cfg);
-    auto c4k = run_cell<4096>(cc, messages, warmup, reps, producer_cpu,
-                              first_consumer_cpu, ncpu);
-    emit(csv, c4k, cfg);
+    run_and_emit(std::integral_constant<std::size_t, 256>{});
+    run_and_emit(std::integral_constant<std::size_t, 1024>{});
+    run_and_emit(std::integral_constant<std::size_t, 4096>{});
   }
 
   // ---- Headline verdict vs DESIGN §5 ----

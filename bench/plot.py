@@ -45,6 +45,17 @@ def _read_csv(name):
         return list(csv.DictReader(f))
 
 
+def _fmt_count(n):
+    """Compact human count: 200000 -> '200k', 1500000 -> '1.5M'."""
+    if n >= 1_000_000:
+        m = n / 1_000_000
+        return f"{m:.1f}M".replace(".0M", "M")
+    if n >= 1_000:
+        k = n / 1_000
+        return f"{k:.0f}k"
+    return str(n)
+
+
 def _noisy_caveat(rows):
     """Return a human caveat string reflecting the actual CSV noisy/governor/turbo
     columns — honesty is driven by the data, not hard-coded."""
@@ -147,11 +158,14 @@ def plot_latency():
     ax.set_ylim(top=max(float(by[s]["p999_ns"]) for s in STRATS) * 3)
 
     # Sub-line: methodology + the honest noisy caveat, woven into the figure
-    # itself so the chart cannot be quoted without it.
+    # itself so the chart cannot be quoted without it. The sample count is read
+    # from the data (max across strategies), never hand-typed — so the caption
+    # can't contradict the run that produced it.
     caveat = _noisy_caveat(rows)
+    n_samples = max(int(by[s]["samples"]) for s in STRATS)
     fig.text(0.5, 0.935,
              "Backpressure, 64B, producer/consumer pinned to distinct cores, "
-             "300k samples",
+             f"{_fmt_count(n_samples)} samples",
              ha="center", va="top", fontsize=9, color="#333")
     fig.text(0.5, 0.905, caveat,
              ha="center", va="top", fontsize=8.5, color="#d93025")

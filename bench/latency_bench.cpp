@@ -80,7 +80,7 @@ LatencyResult run_latency(std::int64_t measure_msgs, std::int64_t warmup_msgs,
   const std::int64_t total = warmup_msgs + measure_msgs;
   const auto oh = static_cast<std::int64_t>(clock_overhead_ns + 0.5);
 
-  Histogram hist(/*max_ns=*/10LL * 1000 * 1000 * 1000, /*sig=*/3);
+  Histogram hist(/*max_ns=*/kHistMaxNs, /*sig=*/3);
 
   std::atomic<bool> consumer_ready{false};
   std::atomic<bool> done{false};
@@ -197,12 +197,12 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "# clock_overhead=%.1f ns (subtracted per sample)\n",
                clock_oh);
 
-  // Pin producer/consumer to different physical cores. On SMT systems logical
-  // CPUs 0 and 1 are usually siblings of core 0; use 0 and 2 to land on
-  // distinct physical cores when possible.
+  // Pin producer/consumer to different physical cores (see pick_core_layout:
+  // skip the producer's SMT sibling so we measure real inter-core coherence).
   const int ncpu = num_online_cpus();
-  const int producer_cpu = 0;
-  const int consumer_cpu = (ncpu > 2) ? 2 : (ncpu > 1 ? 1 : 0);
+  const core_layout layout = pick_core_layout(ncpu);
+  const int producer_cpu = layout.producer_cpu;
+  const int consumer_cpu = layout.first_consumer_cpu;
   std::fprintf(stderr,
                "# pinning: producer=cpu%d consumer=cpu%d (%d online), "
                "samples=%lld warmup=%lld gap=%lldns, block=%zuB, "

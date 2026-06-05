@@ -170,6 +170,7 @@ public:
   // over fresh shared memory). Resets all stamps to empty.
   void init() noexcept {
     next_publish_.store(0, std::memory_order_relaxed);
+    waiters_.store(0, std::memory_order_relaxed);
     for (auto& s : slots_) {
       s.seq.store(empty_seq, std::memory_order_relaxed);
       s.len = 0;
@@ -220,16 +221,28 @@ public:
     // see writing_seq (or the new seq), never a stale-but-equal old stamp.
     // For the very first write to a slot (occupant == empty_seq) this is
     // strictly unnecessary but harmless and keeps the path branch-free.
-    slot.seq.store(writing_seq, std::memory_order_release);
+    //
+    // This whole phase exists ONLY for Overwrite: it is what makes the zero-copy
+    // seqlock read discardable when the producer laps a mid-read consumer. Under
+    // Backpressure the producer never reaches a slot a consumer has not committed
+    // past (await_consumers_past, above), so the slot is provably stable during
+    // any reader's view — the marker would guard a race that cannot occur. We
+    // `if constexpr`-elide it (and its ordering fence), so a Backpressure publish
+    // is just: payload stores + one release stamp. (DESIGN §2 / §3.)
+    if constexpr (std::is_same_v<Overflow, Overwrite>) {
+      slot.seq.store(writing_seq, std::memory_order_release);
 
-    // Ensure the writing marker is globally ordered before the payload stores.
-    // On x86-64 the prior release store + the following plain stores already
-    // can't be reordered in a way that matters (TSO), but on weaker models we
-    // need the marker visible before payload mutation; a release fence pins it.
-    std::atomic_thread_fence(std::memory_order_release);
+      // Ensure the writing marker is globally ordered before the payload stores.
+      // On x86-64 the prior release store + the following plain stores already
+      // can't be reordered in a way that matters (TSO), but on weaker models we
+      // need the marker visible before payload mutation; a release fence pins it.
+      std::atomic_thread_fence(std::memory_order_release);
+    }
 
-    // Write payload + length with PLAIN (non-atomic) stores, bracketed by the
-    // writing marker (above) and the final publish (below).
+    // Write payload + length with PLAIN (non-atomic) stores. Under Overwrite they
+    // are bracketed by the writing marker (above) and the final publish (below);
+    // under Backpressure the slot is exclusively ours, so the final publish alone
+    // supplies the release edge.
     slot.len = len;
     if (len > 0) {
       std::memcpy(slot.payload.data(), data, len);
@@ -248,10 +261,11 @@ public:
 
     // Wake any futex-blocked consumers. No-op (constexpr-removed) for the
     // spinning strategies. Must come AFTER the release publish so a woken
-    // consumer's acquire load observes the new stamp.
+    // consumer's acquire load observes the new stamp. The strategy itself skips
+    // the syscall when waiters_ == 0 (eventcount — see wait_strategy.hpp).
     if constexpr (Wait::blocks) {
       // Wake on the per-slot stamp the consumers actually wait on.
-      Wait::notify(slot.seq);
+      Wait::notify(slot.seq, waiters_);
     }
 
     return seq;
@@ -316,6 +330,11 @@ public:
     return slots_[seq & mask];
   }
 
+  // The eventcount waiter counter a blocking wait strategy increments around its
+  // FUTEX_WAIT and the producer checks before issuing a FUTEX_WAKE. Exposed so
+  // Consumer::read_blocking can pass it through to Wait::wait.
+  std::atomic<std::int32_t>& waiters() noexcept { return waiters_; }
+
   // Publish a consumer's progress so a Backpressure producer can see it.
   void set_cursor(std::size_t id, std::uint64_t value) noexcept {
     if (id < MaxConsumers) {
@@ -338,7 +357,6 @@ private:
   // Backpressure: spin until every active consumer cursor is strictly greater
   // than `seq` (i.e. has finished reading the message with that sequence).
   void await_consumers_past(std::uint64_t seq) noexcept {
-    std::uint64_t iter = 0;
     for (;;) {
       bool all_clear = true;
       for (std::size_t i = 0; i < MaxConsumers; ++i) {
@@ -358,8 +376,6 @@ private:
         return;
       }
       Spin::pause();
-      ++iter;
-      (void)iter;
     }
   }
 
@@ -368,6 +384,14 @@ private:
 
   // Producer cursor: written only by the producer. Its own cache line.
   alignas(detail::cache_line_size) std::atomic<std::uint64_t> next_publish_;
+
+  // Eventcount waiter count for the Futex wait strategy: how many consumers are
+  // currently parked (or committing to park) in FUTEX_WAIT. The producer reads
+  // it before each wake to skip the syscall when zero; consumers inc/dec it
+  // around the blocking wait. Its own cache line so the producer's per-publish
+  // load does not false-share with next_publish_ or the consumer cursors. Unused
+  // (but still zero) for the spinning strategies. (shimmy-7he.)
+  alignas(detail::cache_line_size) std::atomic<std::int32_t> waiters_;
 
   // Consumer cursors: each is itself cache-line aligned (Cursor) so consumers
   // do not false-share with one another.
@@ -459,7 +483,7 @@ public:
       }
       // Wait for the slot we're looking at to be published.
       const slot_type& slot = ring_->slot_at(next_);
-      Wait::wait(slot.seq, next_, iter);
+      Wait::wait(slot.seq, next_, iter, ring_->waiters());
       ++iter;
     }
     if (last_status_ == read_status::ok) {

@@ -97,6 +97,21 @@ inline int num_online_cpus() {
 #endif
 }
 
+// Where to pin the producer and the first consumer for a clean measurement.
+// Producer goes on cpu0; consumers start at cpu2 so we skip cpu1 (the producer's
+// likely SMT sibling) and land on a distinct physical core — pinning siblings to
+// a shared L1/L2 would understate the real inter-core coherence cost a shmem
+// fan-out pays. Falls back to cpu1 when fewer than 3 CPUs are online.
+struct core_layout {
+  int producer_cpu;
+  int first_consumer_cpu;
+};
+
+inline core_layout pick_core_layout(int ncpu) {
+  return core_layout{/*producer_cpu=*/0,
+                     /*first_consumer_cpu=*/(ncpu > 2) ? 2 : 1};
+}
+
 // ---------------------------------------------------------------------------
 // CPU-noise detection — WARN, don't lie (the smoke bench already cautions about
 // frequency scaling; here we actually detect it and surface it).
@@ -188,12 +203,16 @@ inline void print_cpu_config_banner(const cpu_config& c) {
 // HdrHistogram RAII wrapper
 // ---------------------------------------------------------------------------
 
+// Default histogram tracking ceiling: 1ns..10s covers every wait strategy's
+// tail (Futex blocks can be ms-scale under load). A single source of truth so
+// the latency harness does not re-spell the range literal.
+inline constexpr std::int64_t kHistMaxNs = 10LL * 1000 * 1000 * 1000;
+
 class Histogram {
 public:
-  // 1ns .. max_ns, `sig` significant figures. Default range 1ns..10s covers
-  // every wait strategy's tail (Futex blocks can be ms-scale under load).
-  explicit Histogram(std::int64_t max_ns = 10LL * 1000 * 1000 * 1000,
-                     int sig = 3) {
+  // 1ns .. max_ns, `sig` significant figures. Default range covers every wait
+  // strategy's tail (see kHistMaxNs).
+  explicit Histogram(std::int64_t max_ns = kHistMaxNs, int sig = 3) {
     if (hdr_init(1, max_ns, sig, &h_) != 0) {
       h_ = nullptr;
     }
