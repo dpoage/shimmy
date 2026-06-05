@@ -18,3 +18,13 @@ target_link_libraries(shimmy_bench PRIVATE
   shimmy_warnings
   benchmark::benchmark
   PkgConfig::HDRHISTOGRAM)
+
+# Minimal hot-path microbench for the core ring (shimmy-4d4). The full analytics
+# harness is shimmy-7d8.
+add_executable(shimmy_ring_bench
+  ring_bench.cpp)
+
+target_link_libraries(shimmy_ring_bench PRIVATE
+  shimmy::shimmy
+  shimmy_warnings
+  benchmark::benchmark)

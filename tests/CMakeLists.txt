@@ -1,15 +1,20 @@
 # Correctness + concurrency (TSan) tests. Compiled target linking GoogleTest.
 find_package(GTest REQUIRED)
+find_package(Threads REQUIRED)
 include(GoogleTest)
 
 add_executable(shimmy_tests
-  smoke_test.cpp)
+  smoke_test.cpp
+  ring_basic_test.cpp
+  ring_lap_test.cpp
+  ring_concurrency_test.cpp)
 
 target_link_libraries(shimmy_tests PRIVATE
   shimmy::shimmy
   shimmy_warnings
   GTest::gtest
-  GTest::gtest_main)
+  GTest::gtest_main
+  Threads::Threads)
 
 # Optional ThreadSanitizer build. Concurrency stress tests (lap detection,
 # overflow invariants) in shimmy-4d4 will rely on this.
