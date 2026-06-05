@@ -1,4 +1,13 @@
 
+# Build directories
+/build/
+/build-*/
+compile_commands.json
+
+# Nix
+result
+result-*
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

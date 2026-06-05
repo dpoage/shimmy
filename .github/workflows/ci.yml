@@ -1,0 +1,67 @@
+name: CI
+
+# Builds shimmy under the pinned Nix toolchain. Because flake.nix pins nixpkgs,
+# CI compiles against the exact same toolchain as local dev — a prerequisite for
+# reproducible benchmark numbers (DESIGN.md §7/§8).
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang, gcc]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Configure (${{ matrix.compiler }})
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            export CXX=g++
+          else
+            export CXX=clang++
+          fi
+          nix develop --command bash -c '
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_COMPILER="$CXX"
+          '
+
+      - name: Build
+        run: nix develop --command bash -c 'cmake --build build'
+
+      - name: Test
+        run: nix develop --command bash -c 'ctest --test-dir build --output-on-failure'
+
+      - name: Bench (smoke)
+        run: nix develop --command bash -c './build/bench/shimmy_bench --benchmark_min_time=0.01s'
+
+  # Separate ThreadSanitizer build (clang). Concurrency stress tests land in
+  # shimmy-4d4; the bootstrap proves the TSan build configures and runs.
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build + test with TSan
+        run: |
+          nix develop --command bash -c '
+            cmake -S . -B build-tsan -G Ninja \
+              -DCMAKE_CXX_COMPILER=clang++ \
+              -DSHIMMY_ENABLE_TSAN=ON -DSHIMMY_BUILD_BENCH=OFF &&
+            cmake --build build-tsan &&
+            ctest --test-dir build-tsan --output-on-failure
+          '
