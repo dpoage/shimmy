@@ -10,11 +10,22 @@ have a firehose of mostly-small messages and a handful of readers that all need
 to see them *now*: telemetry, market-data fan-out, frame pipelines, that kind of
 thing.
 
-The whole project runs on one rule: **speculation is useless, data doesn't
-lie.** Every number below was produced by a benchmark in `bench/`, run on real
-hardware this session, and the charts are regenerated from the committed CSVs by
-a script — never hand-drawn. Where the measurement is noisy, this README says so
-out loud.
+shimmy is a **sharp tool for one job**, not a messaging framework. It does
+single-producer, single-host, shared-memory fan-out as fast as the hardware
+allows — and nothing else. There is no broker, no network transport, no
+multi-producer write path, no persistence, no schema layer, no cross-host story.
+Those are real problems; they are *other tools' problems*. Every axis that isn't
+on the hot path was left off so the path that remains can be a straight line.
+**A focused tool that is excellent at one thing beats a general one that is
+adequate at everything** — and you can only know which you've built by measuring.
+
+So the whole project runs on one rule: **speculation is useless, data doesn't
+lie.** No claim in this README is asserted from intuition. Every number below was
+produced by a benchmark in `bench/`, run on real hardware this session, and the
+charts are regenerated from the committed CSVs by a script — never hand-drawn.
+Where the measurement is noisy, this README says so out loud; where a number is
+indicative rather than authoritative, it says that too. We would rather publish a
+caveat than a guess.
 
 ---
 
@@ -105,7 +116,11 @@ rest of the slot is slack. That slack is a deliberate trade — we pay it in RAM
 and framing logic a variable-length buffer would need. Power-of-two capacity
 means the ring index is a mask (`seq & (Capacity-1)`), never a modulo.
 
-Everything that *could* be a runtime decision is instead a **compile-time
+This is the shape of the focus: the channel does one thing, and the things it
+*doesn't* do are what keep the hot path short. There is no variable-length
+framing, no dynamic resize, no runtime-pluggable transport — each of those would
+buy generality at the cost of a branch on the path that has to be a straight
+line. Everything that *could* be a runtime decision is instead a **compile-time
 template axis** that collapses to a constant the optimizer can see, leaving a
 straight-line hot path — a sequence load, an acquire, a `memcpy` (or a span
 construction):
@@ -222,6 +237,14 @@ throughput sweep, CSV, CI regression gate) are all in and green.
   optimization that's still an **exploration on a separate branch**, not a
   shipped feature. (Early finding: a stable +40–60 ns median rise buys a tighter
   heavy-load tail; the light-load win couldn't be confirmed on this noisy box.)
+
+**Out of scope — deliberately, not "someday":** multi-producer write paths,
+cross-host or network transport, a broker/router process, message persistence or
+replay-from-disk, and built-in serialization/schema. These aren't backlog items;
+they are the boundary that lets the in-scope work stay fast. If you need them,
+shimmy is the wrong tool, and that's by design — reach for it when you want one
+producer fanning out to local consumers at hardware speed, not when you want a
+general message bus.
 
 Version is `0.0.0` (`include/shimmy/version.hpp`); the API is not yet stable.
 
