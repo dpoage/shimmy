@@ -46,6 +46,62 @@ jobs:
       - name: Bench (smoke)
         run: nix develop --command bash -c './build/bench/shimmy_bench --benchmark_min_time=0.01s'
 
+  # Benchmark + regression gate (shimmy-7d8). The "data doesn't lie" backbone.
+  #
+  # GitHub-hosted runners have NO performance governor, NO core isolation, and
+  # noisy neighbours — exactly the config the harness flags as untrustworthy for
+  # tails (the CSV `noisy` column will be 1). So this job runs the gate ADVISORY:
+  # it surfaces drift in the log (and the regression checker prints any cell that
+  # moved past tolerance) but does NOT block the PR on runner noise. A maintainer
+  # regenerates the committed baseline on a pinned, quiet machine and gates
+  # `--strict` there (see bench/baselines/README.md). Sample counts are reduced
+  # so the job is fast; the baseline was recorded with larger counts (the gate
+  # compares rates/percentiles, not absolute run lengths).
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build (Release)
+        run: |
+          nix develop --command bash -c '
+            cmake -S . -B build-bench -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ &&
+            cmake --build build-bench'
+
+      - name: Run latency harness (per wait strategy)
+        run: |
+          nix develop --command bash -c '
+            ./build-bench/bench/shimmy_latency_bench \
+              --samples=50000 --warmup=5000 --gap_ns=2000 --csv=latency.csv'
+
+      - name: Run throughput sweep (size x consumers)
+        run: |
+          nix develop --command bash -c '
+            ./build-bench/bench/shimmy_throughput_bench \
+              --messages=2000000 --warmup=50000 --reps=2 --csv=throughput.csv'
+
+      - name: Regression gate (advisory on noisy CI runners)
+        run: |
+          nix develop --command bash -c '
+            python3 bench/check_regression.py \
+              --baseline bench/baselines/throughput.csv --current throughput.csv &&
+            python3 bench/check_regression.py \
+              --baseline bench/baselines/latency.csv --current latency.csv'
+
+      - name: Upload bench CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shimmy-bench-csv
+          path: |
+            latency.csv
+            throughput.csv
+
   # Separate ThreadSanitizer build (clang). Concurrency stress tests land in
   # shimmy-4d4; the bootstrap proves the TSan build configures and runs.
   tsan:

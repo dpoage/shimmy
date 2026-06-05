@@ -422,6 +422,20 @@ public:
   Consumer(const Consumer&) = delete;
   Consumer& operator=(const Consumer&) = delete;
 
+  // Move-constructible so a Consumer can be returned by value from a factory
+  // (e.g. ShmSegment::attach_consumer_at_current, shimmy-52e). The moved-from
+  // consumer relinquishes its inline cursor slot so its destructor does NOT
+  // unregister the cursor the moved-to consumer now owns.
+  Consumer(Consumer&& o) noexcept
+      : ring_(o.ring_),
+        next_(o.next_),
+        read_seq_(o.read_seq_),
+        cursor_id_(o.cursor_id_),
+        last_status_(o.last_status_) {
+    o.cursor_id_ = RingT::max_consumers; // moved-from: no cursor to release
+  }
+  Consumer& operator=(Consumer&&) = delete;
+
   // Attempt to read the next message in sequence WITHOUT blocking.
   // Returns a span viewing the payload in place; check status() for validity.
   std::span<const std::byte> read() noexcept {
@@ -506,6 +520,18 @@ public:
   // can validate the zero-copy view first).
   void commit() noexcept {
     next_ = read_seq_ + 1;
+    publish_cursor();
+  }
+
+  // Position the consumer to begin reading at an ARBITRARY sequence. Publishes
+  // the cursor so a Backpressure producer sees it. This is the cross-process
+  // attach primitive (shimmy-52e): a consumer that joins a Backpressure ring
+  // mid-stream seeks to the producer's CURRENT published sequence instead of 0,
+  // which prevents the producer from deadlocking on a never-advancing cursor
+  // stuck behind an already-overwritten slot. See the file header of
+  // shm_segment.hpp and ring.hpp register_consumer() for the full hazard.
+  void seek(std::uint64_t seq) noexcept {
+    next_ = seq;
     publish_cursor();
   }
 

@@ -28,3 +28,33 @@ target_link_libraries(shimmy_ring_bench PRIVATE
   shimmy::shimmy
   shimmy_warnings
   benchmark::benchmark)
+
+# ---------------------------------------------------------------------------
+# Analytics harness (shimmy-7d8): the "data doesn't lie" backbone.
+# These are STANDALONE executables (own timing + threading + CSV), NOT Google
+# Benchmark driver programs — they need precise control of the producer/consumer
+# threads and the timed window, which the GBench loop would obscure. They link
+# HdrHistogram (latency distributions) and pthreads (both spawn pinned worker
+# threads via std::thread + pthread_setaffinity_np).
+# ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+# LATENCY harness: per-wait-strategy end-to-end p50..p99.99 (HdrHistogram, CSV).
+add_executable(shimmy_latency_bench
+  latency_bench.cpp)
+target_link_libraries(shimmy_latency_bench PRIVATE
+  shimmy::shimmy
+  shimmy_warnings
+  PkgConfig::HDRHISTOGRAM
+  Threads::Threads)
+
+# THROUGHPUT harness: single-producer msgs/sec sweep over size x consumers (CSV).
+# It reports rates (not distributions) but shares common.hpp, which includes the
+# hdr header for the shared Histogram type, so it links HdrHistogram too.
+add_executable(shimmy_throughput_bench
+  throughput_bench.cpp)
+target_link_libraries(shimmy_throughput_bench PRIVATE
+  shimmy::shimmy
+  shimmy_warnings
+  PkgConfig::HDRHISTOGRAM
+  Threads::Threads)

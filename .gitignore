@@ -4,6 +4,11 @@
 /build-*/
 compile_commands.json
 
+# Benchmark RUN artifacts (committed baselines live in bench/baselines/ and ARE
+# tracked; these are fresh-run outputs the harness / CI writes to the repo root).
+/latency.csv
+/throughput.csv
+
 # Nix
 result
 result-*

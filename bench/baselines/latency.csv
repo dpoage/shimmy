@@ -1,0 +1,4 @@
+kind,wait_strategy,block_size,samples,clock_overhead_ns,p50_ns,p90_ns,p99_ns,p999_ns,p9999_ns,min_ns,max_ns,mean_ns,governor,turbo,noisy
+latency,Spin,64,300000,20.0,30,40,41,311,2395,20,27535,35.1,powersave,on,1
+latency,SpinThenYield,64,300000,20.0,40,41,50,631,69503,20,102015,55.7,powersave,on,1
+latency,Futex,64,300000,20.0,701,1693,2013,36767,261375,20,321279,962.8,powersave,on,1

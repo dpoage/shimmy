@@ -1,0 +1,17 @@
+kind,policy,wait_strategy,block_size,consumers,messages,elapsed_ns,throughput_msgs_per_sec,throughput_mib_per_sec,governor,turbo,noisy
+throughput,Overwrite,Spin,64,0,10000000,12871781,776893267.5,47417.8,powersave,on,1
+throughput,Overwrite,Spin,256,0,10000000,32696837,305839980.8,74668.0,powersave,on,1
+throughput,Overwrite,Spin,1024,0,10000000,89949897,111173001.1,108567.4,powersave,on,1
+throughput,Overwrite,Spin,4096,0,10000000,790506270,12650121.0,49414.5,powersave,on,1
+throughput,Overwrite,Spin,64,1,10000000,66207972,151039213.2,9218.7,powersave,on,1
+throughput,Overwrite,Spin,256,1,10000000,110095809,90829978.8,22175.3,powersave,on,1
+throughput,Overwrite,Spin,1024,1,10000000,152666086,65502432.5,63967.2,powersave,on,1
+throughput,Overwrite,Spin,4096,1,10000000,819873334,12197006.0,47644.6,powersave,on,1
+throughput,Overwrite,Spin,64,2,10000000,106964248,93489181.5,5706.1,powersave,on,1
+throughput,Overwrite,Spin,256,2,10000000,152973855,65370647.8,15959.6,powersave,on,1
+throughput,Overwrite,Spin,1024,2,10000000,238693536,41894724.8,40912.8,powersave,on,1
+throughput,Overwrite,Spin,4096,2,10000000,851572915,11742975.6,45871.0,powersave,on,1
+throughput,Overwrite,Spin,64,4,10000000,680967106,14684997.1,896.3,powersave,on,1
+throughput,Overwrite,Spin,256,4,10000000,738873724,13534112.4,3304.2,powersave,on,1
+throughput,Overwrite,Spin,1024,4,10000000,858806778,11644062.7,11371.2,powersave,on,1
+throughput,Overwrite,Spin,4096,4,10000000,1876468508,5329159.5,20817.0,powersave,on,1
