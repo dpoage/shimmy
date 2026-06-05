@@ -385,14 +385,6 @@ private:
   // Producer cursor: written only by the producer. Its own cache line.
   alignas(detail::cache_line_size) std::atomic<std::uint64_t> next_publish_;
 
-  // Eventcount waiter count for the Futex wait strategy: how many consumers are
-  // currently parked (or committing to park) in FUTEX_WAIT. The producer reads
-  // it before each wake to skip the syscall when zero; consumers inc/dec it
-  // around the blocking wait. Its own cache line so the producer's per-publish
-  // load does not false-share with next_publish_ or the consumer cursors. Unused
-  // (but still zero) for the spinning strategies. (shimmy-7he.)
-  alignas(detail::cache_line_size) std::atomic<std::int32_t> waiters_;
-
   // Consumer cursors: each is itself cache-line aligned (Cursor) so consumers
   // do not false-share with one another.
   alignas(detail::cache_line_size)
@@ -400,6 +392,20 @@ private:
 
   // The slots. Each Slot is cache-line aligned.
   alignas(detail::cache_line_size) std::array<slot_type, Capacity> slots_;
+
+  // Eventcount waiter count for the Futex wait strategy: how many consumers are
+  // currently parked (or committing to park) in FUTEX_WAIT. The producer reads
+  // it before each wake to skip the syscall when zero; consumers inc/dec it
+  // around the blocking wait. Its own cache line so the producer's per-publish
+  // load does not false-share with next_publish_ or the consumer cursors.
+  //
+  // Placed LAST, AFTER slots_, on purpose: it must not sit between next_publish_
+  // and the slot array, because doing so shifts the slots' offset and measurably
+  // hurt the single-producer publish ceiling (~15% on the 64B/0-consumer cell,
+  // A/B-confirmed) — even though spinning strategies never touch this word. At
+  // the tail it leaves every hot-path field at its original offset. Unused (but
+  // still zero) for the spinning strategies. (shimmy-7he.)
+  alignas(detail::cache_line_size) std::atomic<std::int32_t> waiters_;
 };
 
 // ----------------------------------------------------------------------------
